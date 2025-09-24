@@ -1,3 +1,6 @@
+# data: it's better to download from source or drive 
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
