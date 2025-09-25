@@ -1,66 +1,83 @@
+import os
 import json
+import uuid
 from ollama import Client
-from typing import Union, List
+from typing import Union, List, Optional
+from langchain_ollama import ChatOllama
 
-def call_ollama_api(model_id: str, sys_prompt: str, usr_prompt: str, is_json: bool = False) -> Union[str, dict]:
-    """
-    Sends a prompt to the Ollama API and returns the text content of the response.
-    """
-    client = Client(host='http://10.65.51.226:11434')
+gemma3 = ChatOllama(base_url="http://10.65.51.226:11434",model="gemma3:4b",temperature=0.7)
+gemma3_json = gemma3.bind(format="json")
 
-    options = {'temperature': 0.4, 'num_ctx': 16000}
-    format_type = 'json' if is_json else ''
+with open("../data/icd10cm_mapping.json", "r") as reader:
+    ICD_MAPPING = json.load(reader)
 
-    response = client.chat(
-        model=model_id,
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": usr_prompt}
-        ],
-        options=options,
-        format=format_type or None,
-    )
-
-    text_output = response['message']['content']
-    return json.loads(text_output) if is_json else text_output
-
-
-def generate_virtual_patient_single(model_id: str, icd_codes: List[str]) -> str:
+def generate_virtual_patient_single(diagnosis: str) -> Optional[dict]:
     """
     Generate a full virtual patient case from ICD codes in a single prompt.
+    Retries up to 3 times if the generated JSON is malformed or missing keys.
     """
-    sys_prompt = """你是一位醫學專業文本生成助手。
-根據 ICD 診斷代碼，生成一份完整的中文虛擬病患設定。
-所有內容必須符合醫學常識，但不涉及真實病患個資。
-內容需有臨床合理性，並保持可讀性。"""
-
-    usr_prompt = f"""
-請根據以下 ICD-10 代碼生成完整病歷：
-{icd_codes}
-
-請依照以下步驟生成並直接整合成一份完整的病歷摘要：
-
-1. 逐一解釋 ICD 代碼的疾病名稱與簡短定義。
-2. 根據疾病生成病人背景，包括：年齡、性別、職業、家族史、社會背景。
-3. 整理病人的既往病史、用藥史、生活習慣與危險因子。
-4. 描述現病史與症狀，包括主訴、病程、臨床檢查與檢驗發現。
-5. 說明治療過程、住院或門診經過、病情變化與追蹤。
-6. 最後總結為病歷摘要，格式如下：
-
-【病歷摘要】
-1. 基本背景
-2. 既往病史與危險因子
-3. 現病史與症狀
-4. 臨床檢查與檢驗
-5. 治療與病程
-6. 預後與後續計畫
+    json_form = """
+{
+  "基本背景": ___, 
+  "過去病史與危險因子": ___, 
+  "現病史與症狀": ___,
+  "臨床檢查與檢驗": ___,
+  "治療與病程": ___,
+  "預後與後續計畫": ___
+}
 """
+    prompt = f"""
+你是醫學專業文本生成器。會根據診斷內容，生成一份完整的台灣病患虛擬設定。
+依照以下步驟生成一份完整的病歷內容：
+1. 根據疾病生成病人背景，包括：年齡、性別、職業、家族史、社會背景。
+2. 整理病人的既往病史、用藥史、生活習慣與危險因子。
+3. 描述現病史與症狀，包括主訴、病程、臨床檢查與檢驗發現。
+4. 說明治療過程、住院或門診經過、病情變化與追蹤。
 
-    return call_ollama_api(model_id, sys_prompt, usr_prompt)
+最後輸出JSON格式：
+{json_form}
 
+診斷內容:
+{diagnosis}
+"""
+    required_keys = ["基本背景", "過去病史與危險因子", "現病史與症狀", "臨床檢查與檢驗", "治療與病程", "預後與後續計畫"]
+    for attempt in range(3):
+        try:
+            resp = gemma3_json.invoke(prompt)
+            case_report = json.loads(resp.content)
+            if all(key in case_report for key in required_keys):
+                return case_report
+            else:
+                print(f"Attempt {attempt + 1} failed: Missing keys in JSON. Retrying...")
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"Attempt {attempt + 1} failed with error: {e}. Retrying...")
+    
+    print(f"Failed to generate valid patient data for diagnosis '{diagnosis}' after 3 attempts.")
+    return None
 
-# ========= Example Run =========
 if __name__ == "__main__":
-    icd_codes = ["I21.0", "E11.9", "I10"]
-    case_report = generate_virtual_patient_single("gemma3:4b", icd_codes)
-    print(case_report)
+    # 建立輸出目錄
+    if os.path.exists("data") is False:
+        os.makedirs("data")
+
+    # 取取一份 ICD code 列表
+    with open("../data/random_icd10_collections.json", "r") as reader:
+        icd_collections = json.load(reader)
+
+    for icd_codes in icd_collections:
+        diagnosis = ""
+        for code in icd_codes:
+            diagnosis += f"{ICD_MAPPING[code]} "
+        print(diagnosis)
+        
+        case_report = generate_virtual_patient_single(diagnosis)
+        
+        if case_report:
+            file_path = os.path.join("data", f"{uuid.uuid4()}.json")
+            full_case = {"icd10": icd_codes, "diagnosis": diagnosis, "report": case_report}
+            with open(file_path, "w") as writer:
+                json.dump(full_case, writer, indent=4, ensure_ascii=False)
+            print(file_path)
+        else:
+            print(f"Skipping diagnosis due to generation failure: {diagnosis}")
+            continue
