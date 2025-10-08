@@ -1,5 +1,7 @@
 # data: it's better to download from source or drive 
 data/
+backup/
+qdrant_storage/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

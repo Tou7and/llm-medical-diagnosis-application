@@ -1,0 +1,4 @@
+neo4j
+qdrant-client
+python-dotenv
+neo4j-graphrag
